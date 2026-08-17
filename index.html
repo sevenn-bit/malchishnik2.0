@@ -1174,6 +1174,13 @@
       v.className = 'meme-video';
       // ВАЖНО для iOS Safari: стартуем ВСЕГДА приглушённым + playsinline,
       // иначе play() отклоняется политикой автоплея и ролик просто не появляется.
+      // Звук элемента больше НЕ снимаем: к моменту показа видео (после
+      // одометра, глитча и т.д.) исходный тап по «Открыть» — единственный
+      // жест пользователя — WebKit уже не засчитывает, «окно активации»
+      // истекло. v.muted=false тогда молча игнорируется: видео едет, звука нет.
+      // Вместо этого звук идёт мимо media-элемента, через уже разбуженный
+      // Web Audio (ensureAudio() был вызван раньше, на самый первый тап) —
+      // на него это ограничение не распространяется.
       v.muted = true;
       v.defaultMuted = true;
       v.setAttribute('muted','');
@@ -1187,12 +1194,28 @@
       v.src = memeObjectURL;
       document.body.appendChild(v);
 
+      let memeGain = null, memeSource = null;
+      try{
+        const c = ensureAudio();
+        memeSource = c.createMediaElementSource(v);
+        memeGain = c.createGain();
+        memeGain.gain.value = 1;
+        memeSource.connect(memeGain);
+        memeGain.connect(c.destination);
+      }catch(e){
+        // если Web Audio отказал (совсем старый движок) — хотя бы
+        // пробуем родной звук, вдруг unmute всё же пройдёт
+        v.muted = false;
+      }
+
       let done = false;
       const advance = () => {
         if(done) return;
         done = true;
         clearTimeout(guard);
         v.remove();
+        if(memeSource){ try{ memeSource.disconnect(); }catch(e){} }
+        if(memeGain){ try{ memeGain.disconnect(); }catch(e){} }
         if(memeObjectURL){ URL.revokeObjectURL(memeObjectURL); memeObjectURL = null; }
         startBreakSequence();
       };
@@ -1202,19 +1225,9 @@
 
       v.addEventListener('ended', advance);
       v.addEventListener('error', () => setTimeout(advance, 900));
-
-      // как только пошло — снимаем mute (жест пользователя уже был: тап по «Открыть»).
-      // На iOS снятие mute может заставить WebKit поставить ролик на паузу —
-      // тогда откатываемся обратно в тишину, но кадр продолжает идти.
-      // Лучше немой ролик, чем застывший.
       v.addEventListener('playing', () => {
         clearTimeout(guard);
         guard = setTimeout(advance, 6000);
-        v.muted = false;
-        v.volume = 1;
-        if(v.paused){
-          v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
-        }
       }, { once:true });
 
       const tryPlay = () => v.play();
