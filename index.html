@@ -1144,17 +1144,47 @@
      Blob URL такие запросы поддерживает, при этом файл остаётся автономным
      (никаких внешних запросов, данные те же самые, просто другая обёртка). */
   let memeObjectURL = null;
+  function dataURItoBytes(uri){
+    const [head, b64] = uri.split(',');
+    const mime = (head.match(/data:([^;]+)/) || [,'video/mp4'])[1];
+    const bin  = atob(b64);
+    const buf  = new Uint8Array(bin.length);
+    for(let i=0; i<bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return { mime, buf };
+  }
   function dataURItoObjectURL(uri){
     try{
-      const [head, b64] = uri.split(',');
-      const mime = (head.match(/data:([^;]+)/) || [,'video/mp4'])[1];
-      const bin  = atob(b64);
-      const buf  = new Uint8Array(bin.length);
-      for(let i=0; i<bin.length; i++) buf[i] = bin.charCodeAt(i);
+      const { mime, buf } = dataURItoBytes(uri);
       return URL.createObjectURL(new Blob([buf], { type: mime }));
     }catch(e){
       return uri; // не вышло — отдаём как было, хуже не станет
     }
+  }
+
+  /* Звук мем-ролика решили НЕ брать из самого <video>.
+     Причина: video остаётся muted ради надёжного автоплея, а WebKit на iOS
+     давит звук на уровне аппаратного mute даже когда его пытаешься перехватить
+     через createMediaElementSource — то есть звук элемента и его Web Audio
+     тень немы одновременно, обхода через граф нет.
+     Поэтому аудиодорожка декодируется ОТДЕЛЬНО через decodeAudioData и
+     проигрывается как независимый AudioBufferSourceNode, синхронно со
+     стартом видео. Декодирование начинаем заранее (при загрузке страницы),
+     чтобы к моменту сцены буфер уже был готов и не тормозил синхронизацию. */
+  let memeAudioBuffer = null;
+  let memeAudioReady = null;
+  function prepareMemeAudio(){
+    if(memeAudioReady || !ASSETS.memeVideo) return memeAudioReady;
+    memeAudioReady = new Promise((resolve) => {
+      try{
+        const c = ensureAudio();
+        const { buf } = dataURItoBytes(ASSETS.memeVideo);
+        c.decodeAudioData(buf.buffer.slice(0), (decoded) => {
+          memeAudioBuffer = decoded;
+          resolve(decoded);
+        }, () => resolve(null)); // не декодировалось — обойдёмся немым видео
+      }catch(e){ resolve(null); }
+    });
+    return memeAudioReady;
   }
 
   function onDateLanded(){
@@ -1172,15 +1202,11 @@
 
       const v = document.createElement('video');
       v.className = 'meme-video';
-      // ВАЖНО для iOS Safari: стартуем ВСЕГДА приглушённым + playsinline,
-      // иначе play() отклоняется политикой автоплея и ролик просто не появляется.
-      // Звук элемента больше НЕ снимаем: к моменту показа видео (после
-      // одометра, глитча и т.д.) исходный тап по «Открыть» — единственный
-      // жест пользователя — WebKit уже не засчитывает, «окно активации»
-      // истекло. v.muted=false тогда молча игнорируется: видео едет, звука нет.
-      // Вместо этого звук идёт мимо media-элемента, через уже разбуженный
-      // Web Audio (ensureAudio() был вызван раньше, на самый первый тап) —
-      // на него это ограничение не распространяется.
+      // Видео ВСЕГДА немое и остаётся немым — это чисто картинка.
+      // Звук идёт отдельным треком через Web Audio (см. ниже), потому что
+      // на iOS Safari звук самого <video>, даже перехваченный через
+      // createMediaElementSource, всё равно давится аппаратным mute —
+      // обхода через граф на уровне media-элемента нет.
       v.muted = true;
       v.defaultMuted = true;
       v.setAttribute('muted','');
@@ -1194,19 +1220,19 @@
       v.src = memeObjectURL;
       document.body.appendChild(v);
 
-      let memeGain = null, memeSource = null;
-      try{
-        const c = ensureAudio();
-        memeSource = c.createMediaElementSource(v);
-        memeGain = c.createGain();
-        memeGain.gain.value = 1;
-        memeSource.connect(memeGain);
-        memeGain.connect(c.destination);
-      }catch(e){
-        // если Web Audio отказал (совсем старый движок) — хотя бы
-        // пробуем родной звук, вдруг unmute всё же пройдёт
-        v.muted = false;
-      }
+      let audioNode = null;
+      const c = ensureAudio();
+      const stopMemeAudio = () => {
+        if(audioNode){ try{ audioNode.stop(); }catch(e){} try{ audioNode.disconnect(); }catch(e){} audioNode = null; }
+      };
+      const playMemeAudio = () => {
+        if(!memeAudioBuffer) return;
+        stopMemeAudio();
+        audioNode = c.createBufferSource();
+        audioNode.buffer = memeAudioBuffer;
+        audioNode.connect(c.destination);
+        audioNode.start();
+      };
 
       let done = false;
       const advance = () => {
@@ -1214,8 +1240,7 @@
         done = true;
         clearTimeout(guard);
         v.remove();
-        if(memeSource){ try{ memeSource.disconnect(); }catch(e){} }
-        if(memeGain){ try{ memeGain.disconnect(); }catch(e){} }
+        stopMemeAudio();
         if(memeObjectURL){ URL.revokeObjectURL(memeObjectURL); memeObjectURL = null; }
         startBreakSequence();
       };
@@ -1228,6 +1253,10 @@
       v.addEventListener('playing', () => {
         clearTimeout(guard);
         guard = setTimeout(advance, 6000);
+        // буфер декодируется заранее (prepareMemeAudio при загрузке страницы),
+        // так что здесь он почти всегда уже готов — запускаем в упор к кадру
+        if(memeAudioBuffer){ playMemeAudio(); }
+        else if(memeAudioReady){ memeAudioReady.then(() => { if(!done) playMemeAudio(); }); }
       }, { once:true });
 
       const tryPlay = () => v.play();
@@ -1321,6 +1350,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     buildPuzzle(ASSETS.puzzleImage || generatePlaceholderImage());
     prepareCrackPaths();
+    prepareMemeAudio(); // декодируем звук ролика заранее, пока юзер ещё возится с пазлом
   });
 </script>
 </body>
