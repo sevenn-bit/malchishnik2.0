@@ -478,9 +478,15 @@
     opacity:.8;
   }
 
-  /* сама вывеска — как настоящая табличка магазина: рамка, фон, лёгкая тень от лампы внутри */
+  /* сама вывеска — как настоящая табличка магазина: рамка, фон, лёгкая тень от лампы внутри.
+     max-width НЕ влияет на снос вбок при повороте (см. комментарий у .hang-rig выше —
+     та математика завязана только на угол и фиксированную -58vh дистанцию до точки
+     поворота, а не на размер самой таблички), поэтому спокойно ограничиваем ширину
+     под длинную фразу и даём тексту переноситься. */
   .sign-board{
     position:relative;
+    max-width:min(80vw, 380px);
+    text-align:center;
     padding:.85em 1.4em;
     background:
       linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0) 40%),
@@ -509,10 +515,21 @@
     display:block;
     font-family:'Baloo 2',sans-serif;
     font-weight:800;
-    font-size:clamp(2.6rem,13vw,5.2rem);
+    font-size:clamp(1.3rem,6.5vw,2.3rem);
+    line-height:1.15;
     color:#EDEDED;
-    letter-spacing:.05em;
+    letter-spacing:.02em;
     text-shadow:2px 0 var(--blood), -2px 0 var(--toxic);
+  }
+  .final-timer{
+    display:block;
+    font-family:'Space Mono',monospace;
+    font-weight:700;
+    font-size:clamp(1.1rem,5.5vw,1.9rem);
+    letter-spacing:.04em;
+    margin-top:.35em;
+    color:var(--toxic);
+    text-shadow:1px 0 var(--blood), -1px 0 var(--toxic);
   }
   body.broken .sign-board{ animation:impactSquash 1.7s forwards; }
   @keyframes impactSquash{
@@ -579,9 +596,11 @@
     .date-readout{ margin:.3rem 0 .7rem; }
     .hint{ margin-bottom:1rem; }
     .captions{ margin-top:.9rem; min-height:2.6em; }
-    /* Финальный экран НАМЕРЕННО не трогаем: замеры показали, что табличка
-       в альбомной и так помещается, а её посадка держится на выверенной
-       математике transform-origin. Лезть туда — только ломать. */
+    /* Позицию и физику падения таблички (hang-rig/transform-origin) НАМЕРЕННО
+       не трогаем — она не зависит от размера содержимого (см. комментарий
+       у .hang-rig). Тут только шрифт текста внутри неё под низкий экран. */
+    .final-word{ font-size:clamp(1.1rem,5.5vh,1.7rem); }
+    .final-timer{ font-size:clamp(.9rem,4.6vh,1.4rem); }
   }
 
   @media (prefers-reduced-motion: reduce){
@@ -618,7 +637,7 @@
     <div class="main-inner">
       <p class="eyebrow" style="color:var(--butter)">Помню как сейчас</p>
       <div class="date-readout" id="dateReadout">
-        <span class="digit" data-i="0">1</span><span class="digit" data-i="1">6</span><span class="dot">.</span><span class="digit" data-i="2">0</span><span class="digit" data-i="3">5</span><span class="dot">.</span><span class="digit" data-i="4">2</span><span class="digit" data-i="5">0</span><span class="digit" data-i="6">0</span><span class="digit" data-i="7">6</span>
+        <span class="digit" data-i="0">1</span><span class="digit" data-i="1">6</span><span class="dot">.</span><span class="digit" data-i="2">0</span><span class="digit" data-i="3">5</span><span class="dot">.</span><span class="digit" data-i="4">2</span><span class="digit" data-i="5">0</span><span class="digit" data-i="6">2</span><span class="digit" data-i="7">6</span>
       </div>
       <p class="hint">двадцать лет назад родился один хороший человек. пора бы уже что-то устроить</p>
       <button id="openBtn" class="open-btn">Открыть</button>
@@ -660,7 +679,8 @@
       <div class="sign-board" id="signBoard">
         <span class="bolt bolt--l" id="boltL"></span>
         <span class="bolt bolt--r" id="boltR"></span>
-        <span class="final-word">Жди</span>
+        <span class="final-word">LSD Трип начнется</span>
+        <span class="final-timer" id="finalTimer">00:00:00:00</span>
       </div>
     </div>
   </div>
@@ -1272,6 +1292,25 @@
     }
   }
 
+  function startFinalTimer(){
+    const el = document.getElementById('finalTimer');
+    if(!el) return;
+    const target = Date.UTC(2026, 7, 26, 7, 0, 0); // 26.08.2026 13:00 по Омску (UTC+6) = 07:00 UTC
+    const pad = n => String(n).padStart(2, '0');
+    const tick = () => {
+      const diff = target - Date.now();
+      if(diff <= 0){ el.textContent = 'СТАРТ!'; return; }
+      const totalSec = Math.floor(diff / 1000);
+      const days = Math.floor(totalSec / 86400);
+      const hours = Math.floor((totalSec % 86400) / 3600);
+      const mins = Math.floor((totalSec % 3600) / 60);
+      const secs = totalSec % 60;
+      el.textContent = `${pad(days)}:${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+    };
+    tick();
+    setInterval(tick, 1000);
+  }
+
   function startBreakSequence(){
     stopMusic(500); // музыка обрывается в тишину — для драмы
 
@@ -1287,10 +1326,11 @@
       document.body.classList.add('broken'); // осколки разлетаются, финал
       shatterSound();
       finalAmbient();
-      fallSound(); // табличка «Жди» падает и повисает на проводах
+      fallSound(); // табличка падает и повисает на проводах
       setTimeout(() => runFlicker(document.querySelector('.sign-board')), 1000);
       igniteNeon(); // имена организаторов загораются неоном вразнобой
       startLiveWires(); // провода оживают и начинают дышать, привязанные к болтам
+      startFinalTimer(); // обратный отсчёт до старта
     }, TIMING.glitchDuration);
   }
 
